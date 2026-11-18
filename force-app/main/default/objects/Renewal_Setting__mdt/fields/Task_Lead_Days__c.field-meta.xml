@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Task_Lead_Days__c</fullName>
+    <label>Task Lead Time (Days)</label>
+    <description>Number of calendar days before the agreement End Date that the Renewal Task is due.</description>
+    <type>Number</type>
+    <precision>3</precision>
+    <scale>0</scale>
+    <required>true</required>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+</CustomField>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Renewal_End_Date__c</fullName>
+    <label>Renewal End Date</label>
+    <description>Set by automation only. Marks a Task as a Renewal Task and stores the Service Agreement End Date (renewal cycle) it was created for. Used to prevent duplicate Renewal Tasks for the same cycle.</description>
+    <inlineHelpText>Agreement End Date this renewal task refers to. Maintained by automation.</inlineHelpText>
+    <type>Date</type>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+</CustomField>

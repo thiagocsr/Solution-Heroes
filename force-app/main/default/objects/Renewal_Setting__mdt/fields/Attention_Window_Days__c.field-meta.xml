@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Attention_Window_Days__c</fullName>
+    <label>Attention Window (Days)</label>
+    <description>Number of calendar days ahead of today in which an agreement End Date requires renewal attention (inclusive).</description>
+    <type>Number</type>
+    <precision>3</precision>
+    <scale>0</scale>
+    <required>true</required>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+</CustomField>

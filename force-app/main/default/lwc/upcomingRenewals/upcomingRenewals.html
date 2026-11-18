@@ -1,0 +1,59 @@
+<template>
+    <lightning-card title={cardTitle} icon-name="standard:contract">
+        <div slot="actions" class="slds-grid slds-grid_vertical-align-center">
+            <lightning-button-icon
+                icon-name="utility:refresh"
+                alternative-text="Refresh"
+                title="Refresh"
+                onclick={handleRefresh}
+                disabled={isProcessing}
+                data-id="refresh"
+            ></lightning-button-icon>
+            <lightning-button
+                class="slds-m-left_x-small"
+                variant="brand"
+                label={startButtonLabel}
+                icon-name="utility:play"
+                onclick={handleStartSelected}
+                disabled={isStartDisabled}
+                data-id="start-selected"
+            ></lightning-button>
+        </div>
+
+        <div class="container slds-is-relative">
+            <template lwc:if={showSpinner}>
+                <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+            </template>
+
+            <template lwc:if={errorMessage}>
+                <div class="slds-p-around_medium slds-text-color_error" role="alert" data-id="error">
+                    <lightning-icon
+                        icon-name="utility:error"
+                        variant="error"
+                        size="x-small"
+                        class="slds-m-right_x-small"
+                    ></lightning-icon>
+                    {errorMessage}
+                </div>
+            </template>
+            <template lwc:elseif={hasRenewals}>
+                <p class="slds-p-horizontal_medium slds-p-bottom_small slds-text-color_weak" data-id="summary">
+                    {notStartedCount} not started. Agreements ending within {urgentDays} days are highlighted.
+                </p>
+                <lightning-datatable
+                    key-field="agreementId"
+                    data={renewals}
+                    columns={columns}
+                    selected-rows={selectedRowIds}
+                    onrowselection={handleRowSelection}
+                    onrowaction={handleRowAction}
+                ></lightning-datatable>
+            </template>
+            <template lwc:elseif={isEmpty}>
+                <div class="slds-p-around_large slds-text-align_center slds-text-color_weak" data-id="empty">
+                    No agreements require renewal attention right now.
+                </div>
+            </template>
+        </div>
+    </lightning-card>
+</template>
