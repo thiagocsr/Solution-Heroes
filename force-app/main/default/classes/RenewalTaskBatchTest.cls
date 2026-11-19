@@ -63,10 +63,17 @@ private class RenewalTaskBatchTest {
         Assert.areEqual(50, countRenewalTasks(), 'The sweep must be idempotent');
     }
 
+    // Scheduled jobs and async job history of the org are visible inside
+    // tests, so these tests use their own job name and compare counts
+    // before/after instead of assuming an empty org.
+    private static final String TEST_JOB_NAME = 'Daily Renewal Task Sync (test)';
+
     @IsTest
     static void scheduleDaily_registersCronJobThatLaunchesTheBatch() {
+        Integer batchJobsBefore = countRenewalBatchJobs();
+
         Test.startTest();
-        Id cronId = RenewalTaskBatch.scheduleDaily();
+        Id cronId = RenewalTaskBatch.scheduleDaily(TEST_JOB_NAME);
         Test.stopTest();
 
         CronTrigger cron = [
@@ -76,18 +83,45 @@ private class RenewalTaskBatchTest {
             WITH SYSTEM_MODE
         ];
         Assert.areEqual(RenewalTaskBatch.DAILY_CRON, cron.CronExpression);
-        Assert.areEqual(RenewalTaskBatch.JOB_NAME, cron.CronJobDetail.Name);
+        Assert.areEqual(TEST_JOB_NAME, cron.CronJobDetail.Name);
         Assert.isNotNull(cron.NextFireTime);
         Assert.areEqual(
-            1,
-            [
-                SELECT COUNT()
-                FROM AsyncApexJob
-                WHERE JobType = 'BatchApex' AND ApexClass.Name = 'RenewalTaskBatch'
-                WITH SYSTEM_MODE
-            ],
+            batchJobsBefore + 1,
+            countRenewalBatchJobs(),
             'Running the scheduled job must enqueue the batch'
         );
+    }
+
+    @IsTest
+    static void scheduleDaily_calledTwice_keepsSingleSchedule() {
+        Id firstId = RenewalTaskBatch.scheduleDaily(TEST_JOB_NAME);
+        Id secondId = RenewalTaskBatch.scheduleDaily(TEST_JOB_NAME);
+
+        Assert.areEqual(firstId, secondId, 'Re-running the setup must not fail nor duplicate the schedule');
+        Assert.areEqual(
+            1,
+            [SELECT COUNT() FROM CronTrigger WHERE CronJobDetail.Name = :TEST_JOB_NAME WITH SYSTEM_MODE]
+        );
+    }
+
+    @IsTest
+    static void scheduleDaily_defaultName_usesStandardJobName() {
+        // Works whether or not the org already has the real schedule (idempotent).
+        Id cronId = RenewalTaskBatch.scheduleDaily();
+
+        Assert.areEqual(
+            RenewalTaskBatch.JOB_NAME,
+            [SELECT CronJobDetail.Name FROM CronTrigger WHERE Id = :cronId WITH SYSTEM_MODE].CronJobDetail.Name
+        );
+    }
+
+    private static Integer countRenewalBatchJobs() {
+        return [
+            SELECT COUNT()
+            FROM AsyncApexJob
+            WHERE JobType = 'BatchApex' AND ApexClass.Name = 'RenewalTaskBatch'
+            WITH SYSTEM_MODE
+        ];
     }
 
     @IsTest

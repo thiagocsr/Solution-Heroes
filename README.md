@@ -8,7 +8,7 @@ First production-ready version of a renewal management solution for Service Agre
 
 | | |
 |---|---|
-| Apex tests | **86 passing, 100% coverage** on every class and both triggers |
+| Apex tests | **88 passing, 100% coverage** on every class and both triggers |
 | API version | 68.0 |
 | Business rules | Configurable through Custom Metadata (30-day window, 10-day task lead time) |
 
@@ -43,7 +43,7 @@ sf project deploy start --source-dir force-app --target-org <alias> --test-level
 # 2. Grant access (required: fields deployed via metadata have no FLS on any profile)
 sf org assign permset --name Renewal_Management --name Application_Log_Viewer --target-org <alias>
 
-# 3. Schedule the daily sweep (02:00, scheduling user's time zone)
+# 3. Schedule the daily sweep (02:00, scheduling user's time zone; safe to re-run)
 sf apex run --file scripts/apex/scheduleRenewalBatch.apex --target-org <alias>
 
 # 4. Optional: load demo data (safe to re-run)
@@ -186,7 +186,7 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 | **2. Trigger** | `ServiceAgreementTrigger` → `RenewalTaskService.syncRenewalTasks()`. Bulk-safe: 2 queries and at most 4 DML statements (including the log write) per invocation, regardless of volume. Duplicate prevention by cycle (see [How it works](#how-it-works)) |
 | **3. LWC** | `upcomingRenewals` on the *Upcoming Renewals* App Page: datatable, urgency highlighting, Start Renewal via row action or bulk selection, confirmation, toasts, refresh, empty and error states. Renewal progress (Not Started → In Progress → Completed) is visible per row; completion is driven by the Renewal Task (`TaskTrigger`) |
 | **4. Date handling** | `Date` fields only; `Date.addDays()` / `Date.daysBetween()` for calendar arithmetic; `date-local` column type in the LWC; month, year and leap-year boundaries covered by tests |
-| **5. Testing** | 7 test classes, 86 tests, see [Testing strategy](#testing-strategy) |
+| **5. Testing** | 7 test classes, 88 tests, see [Testing strategy](#testing-strategy) |
 
 ---
 
@@ -251,13 +251,13 @@ Missing access surfaces in the UI as a clear message: *"You do not have access t
 
 ## Testing strategy
 
-**86 Apex tests in 7 classes, 100% coverage.** The goal is behaviour, not coverage: every rule, boundary and failure path has a dedicated, named test.
+**88 Apex tests in 7 classes, 100% coverage.** The goal is behaviour, not coverage: every rule, boundary and failure path has a dedicated, named test.
 
 | Test class | Focus |
 |---|---|
 | `RenewalServiceTest` | Each criterion in isolation; window boundaries (day 0, 30, 31, yesterday); month, year and leap-year windows; configurable window; SOQL ↔ in-memory consistency; DTO fields; security (user with and without permission set) |
 | `RenewalTaskServiceTest` | Task creation and assignment; non-qualifying agreements; becoming qualifying on update; **duplicate prevention** (repeated edits, completed task, End Date change with open task, new cycle, unrelated manual tasks); **bulk** (200 insert, 200 update, mixed 100/100, constant query count); assignee fallback; due-date calendar boundaries; overdue task; configurable lead time; real DML failure logging; **Task completion sync** (current cycle → Completed, reopen → In Progress, previous-cycle and non-renewal Tasks ignored, 200 Tasks completed in bulk, new cycle after Completed resets the status) |
-| `RenewalTaskBatchTest` | Agreements entering the window without edits (200, time simulated); only qualifying processed; idempotent re-run; scheduling; failed-chunk logging |
+| `RenewalTaskBatchTest` | Agreements entering the window without edits (200, time simulated); only qualifying processed; idempotent re-run; scheduling (also idempotent, and independent of the org's real schedule); failed-chunk logging |
 | `UpcomingRenewalsControllerTest` | Read as renewal user / no-access user; start renewal (agreement + task, idempotent, a completed renewal never regresses); validation; no-access and **read-only** users (permission set built inside the test) change nothing; deleted record; DML failure and unexpected errors via **stub** |
 | `ApplicationLoggerTest` | Buffering, single DML, exception capture, truncation, no-op flush |
 | `RenewalSettingsTest` / `DateProviderTest` | Metadata values, fallbacks for blank/invalid config, date override |

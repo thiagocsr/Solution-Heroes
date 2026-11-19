@@ -26,9 +26,30 @@ public without sharing class RenewalTaskBatch implements Database.Batchable<SObj
     @TestVisible
     private static final String LOG_SOURCE = 'RenewalTaskBatch';
 
-    /** Registers the daily schedule and returns the CronTrigger Id. */
+    /** Registers the daily schedule under the standard name and returns the CronTrigger Id. */
     public static Id scheduleDaily() {
-        return System.schedule(JOB_NAME, DAILY_CRON, new RenewalTaskBatch());
+        return scheduleDaily(JOB_NAME);
+    }
+
+    /**
+     * Idempotent: if a job with this name is already scheduled, its
+     * CronTrigger Id is returned instead of failing, so the setup script can
+     * be run more than once. The name is a parameter so tests can schedule
+     * their own job without colliding with the org's real schedule
+     * (CronTrigger records are visible inside Apex tests).
+     */
+    public static Id scheduleDaily(String jobName) {
+        List<CronTrigger> existing = [
+            SELECT Id
+            FROM CronTrigger
+            WHERE CronJobDetail.Name = :jobName
+            WITH SYSTEM_MODE
+            LIMIT 1
+        ];
+        if (!existing.isEmpty()) {
+            return existing[0].Id;
+        }
+        return System.schedule(jobName, DAILY_CRON, new RenewalTaskBatch());
     }
 
     // Schedulable
