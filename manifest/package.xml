@@ -16,6 +16,7 @@
         <members>RenewalTaskServiceTest</members>
         <members>ServiceAgreementSelector</members>
         <members>ServiceAgreementTriggerHandler</members>
+        <members>TaskTriggerHandler</members>
         <members>TestDataFactory</members>
         <members>UpcomingRenewal</members>
         <members>UpcomingRenewalsController</members>
@@ -25,6 +26,7 @@
     </types>
     <types>
         <members>ServiceAgreementTrigger</members>
+        <members>TaskTrigger</members>
         <name>ApexTrigger</name>
     </types>
     <types>

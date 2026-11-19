@@ -8,7 +8,7 @@ First production-ready version of a renewal management solution for Service Agre
 
 | | |
 |---|---|
-| Apex tests | **75 passing, 100% coverage** on every class and the trigger |
+| Apex tests | **86 passing, 100% coverage** on every class and both triggers |
 | API version | 68.0 |
 | Business rules | Configurable through Custom Metadata (30-day window, 10-day task lead time) |
 
@@ -73,7 +73,8 @@ To run the tests on their own: `sf apex run test --test-level RunLocalTests --co
 |---|---|
 | Ends today, in 4, 9, 15, 22 and 30 days (Active, renewal required) | Listed in the component; one Renewal Task each |
 | Ends in 4 days | Task due date is in the past (overdue by design) |
-| One agreement already started | Shows ✓ In Progress; Task In Progress |
+| One agreement already started | Shows 🕒 In Progress; Task In Progress |
+| One agreement whose Renewal Task was completed | Shows ✓ Completed; Start Renewal disabled |
 | One agreement without Account Manager | Task assigned to the Owner; Warning in Application Logs |
 | Ends in 31 days, ended 3 days ago, Draft, Cancelled, renewal not required | Not listed, no Task |
 | Ends in 75 days | Not listed today; the daily batch creates its Task when it enters the window |
@@ -95,13 +96,25 @@ To run the tests on their own: `sf apex run test --test-level RunLocalTests --co
 | A Renewal Task already exists for the current End Date (open **or completed**) | Nothing (this is what makes edits idempotent) |
 | An **open** Renewal Task exists for a different End Date (End Date changed while work is pending) | Re-align that Task: new due date and cycle |
 | No Renewal Task for this cycle | Create one, due `End_Date__c − 10` days, assigned to the Account Manager (or the Owner if the manager is blank/inactive) |
-| New cycle on an agreement whose previous renewal was In Progress | Also reset `Renewal_Status__c` to Not Started |
+| New cycle on an agreement whose previous renewal was In Progress or Completed | Also reset `Renewal_Status__c` to Not Started |
+
+**Renewal Status follows the current cycle's Renewal Task** (`TaskTrigger`):
+
+| Renewal Task of the **current** cycle | Agreement `Renewal_Status__c` |
+|---|---|
+| Started from the component | In Progress (the Task moves to In Progress too) |
+| Completed (closed) | **Completed** |
+| Reopened | Back to In Progress |
+| Task of a previous cycle, or a non-renewal Task | Ignored |
+
+Completed agreements stay in the list (marked ✓) until they leave the window, typically when the renewal moves the End Date beyond the next 30 days.
 
 **Entry points**, all applying the same rules through `RenewalTaskService`:
 
-1. **Trigger**, after insert / after update.
+1. **Agreement trigger**, after insert / after update.
 2. **Daily batch**, which catches agreements that enter the window just because time passed (no DML means no trigger).
-3. **Upcoming Renewals component**: *Start Renewal* (row action or bulk selection, with confirmation) sets the agreement to In Progress and the open Renewal Task to In Progress.
+3. **Upcoming Renewals component**: *Start Renewal* (row action or bulk selection, with confirmation) sets the agreement to In Progress and the open Renewal Task to In Progress. A Completed renewal is never moved back to In Progress.
+4. **Task trigger**, after update: completing or reopening the current cycle's Renewal Task updates the agreement Renewal Status.
 
 ---
 
@@ -118,7 +131,7 @@ To run the tests on their own: `sf apex run test --test-level RunLocalTests --co
 | `Agreement_Value__c` | Currency(16,2) | |
 | `Renewal_Required__c` | Checkbox | |
 | `Account_Manager__c` | Lookup(User) | Set Null on delete |
-| `Renewal_Status__c` | Picklist (Not Started, In Progress) | Progress of the current renewal cycle |
+| `Renewal_Status__c` | Picklist (Not Started, In Progress, Completed) | Progress of the current renewal cycle |
 
 Field history is tracked on End Date, Status, Renewal Required, Account Manager and Renewal Status.
 
@@ -140,6 +153,7 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
                           (validation, error mapping)    (criteria, DTO)     (SOQL, USER_MODE)
                                                                │
  ServiceAgreementTrigger ─► ServiceAgreementTriggerHandler ─┐  │ startRenewal
+ TaskTrigger ─────────────► TaskTriggerHandler ─────────────┤  │
                                                             ▼  ▼
  RenewalTaskBatch (Schedulable + Batchable) ─────────► RenewalTaskService ──► RenewalTaskSelector, UserSelector
                                                         (cycle rules, DML)     (SOQL, SYSTEM_MODE)
@@ -153,10 +167,11 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 |---|---|---|
 | Entry | `ServiceAgreementTrigger` | One trigger per object; delegates only |
 | Entry | `ServiceAgreementTriggerHandler` | Routes trigger events to services |
+| Entry | `TaskTrigger` / `TaskTriggerHandler` | Renewal Task completed or reopened → agreement Renewal Status |
 | Entry | `RenewalTaskBatch` | Daily sweep; reuses `RenewalTaskService` unchanged |
 | Entry | `UpcomingRenewalsController` | `@AuraEnabled` boundary: input validation, user-friendly errors |
 | Domain | `RenewalService` | **The renewal criteria** (in-memory and SOQL-backed), start renewal |
-| Domain | `RenewalTaskService` | Renewal Task lifecycle: create, re-align, start, duplicate prevention, assignee fallback |
+| Domain | `RenewalTaskService` | Renewal Task lifecycle: create, re-align, start, complete, duplicate prevention, assignee fallback |
 | Data | `ServiceAgreementSelector`, `RenewalTaskSelector`, `UserSelector` | All SOQL, with explicit access mode |
 | Model | `UpcomingRenewal` | DTO for the UI; Days Remaining computed server-side |
 | Support | `DateProvider`, `RenewalSettings`, `ApplicationLogger` | Testable clock, configuration, persistent logging |
@@ -169,9 +184,9 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 |---|---|
 | **1. Apex service** | `RenewalService.getUpcomingRenewals()` returns `UpcomingRenewal` DTOs (account, agreement, end date, days remaining, value, manager, renewal status). `requiresAttention()` / `filterRequiringAttention()` hold the same rule in memory |
 | **2. Trigger** | `ServiceAgreementTrigger` → `RenewalTaskService.syncRenewalTasks()`. Bulk-safe: 2 queries and at most 4 DML statements (including the log write) per invocation, regardless of volume. Duplicate prevention by cycle (see [How it works](#how-it-works)) |
-| **3. LWC** | `upcomingRenewals` on the *Upcoming Renewals* App Page: datatable, urgency highlighting, Start Renewal via row action or bulk selection, confirmation, toasts, refresh, empty and error states |
+| **3. LWC** | `upcomingRenewals` on the *Upcoming Renewals* App Page: datatable, urgency highlighting, Start Renewal via row action or bulk selection, confirmation, toasts, refresh, empty and error states. Renewal progress (Not Started → In Progress → Completed) is visible per row; completion is driven by the Renewal Task (`TaskTrigger`) |
 | **4. Date handling** | `Date` fields only; `Date.addDays()` / `Date.daysBetween()` for calendar arithmetic; `date-local` column type in the LWC; month, year and leap-year boundaries covered by tests |
-| **5. Testing** | 7 test classes, 75 tests, see [Testing strategy](#testing-strategy) |
+| **5. Testing** | 7 test classes, 86 tests, see [Testing strategy](#testing-strategy) |
 
 ---
 
@@ -183,7 +198,7 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 4. **Task due date = End Date − 10, applied literally.** If the agreement ends in fewer than 10 days, the Task is created already overdue, which signals urgency. The alternative (clamping to today) was rejected because it hides the urgency.
 5. **One Renewal Task per renewal cycle**, the cycle being the End Date. A completed Task still covers its cycle. A new Task is created only when the End Date changes to a new cycle with no open Task.
 6. **Assignee fallback:** if the Account Manager is blank or inactive, the Task goes to the agreement Owner (with a Warning log). If neither is an active user (e.g. a queue owner), no Task is created and an Error is logged.
-7. **"Renewal work has started"** is represented by `Renewal_Status__c = In Progress` on the agreement, and the open Renewal Task also moves to In Progress. Started agreements **stay in the list** (marked ✓) so the team keeps full visibility of everything ending soon.
+7. **"Renewal work has started"** is represented by `Renewal_Status__c = In Progress` on the agreement, and the open Renewal Task also moves to In Progress. **Completing the current cycle's Renewal Task marks the renewal Completed**: the Task is where the account manager records that the work is done. Started and completed agreements **stay in the list** so the team keeps full visibility of everything ending soon. They leave it when the End Date moves beyond the window (renewal) or passes.
 8. **"Today"** is the running user's local date (`Date.today()`). All fields are `Date`, so no time zone conversion is involved.
 9. **Sharing:** Service Agreement OWD is Public Read/Write, assuming a collaborative renewal team. Delete is not granted: agreements are closed via Status, not deleted.
 10. **Scale:** the 30-day window is expected to return tens or hundreds of records. The UI query is capped at 2,000 rows.
@@ -198,6 +213,7 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 | Trigger evaluates every insert/update, not only changes to key fields | An agreement can enter the window by time passing; any later edit should then create the missing Task | Field-change filter (would miss that case) |
 | No static recursion flag | The service is **idempotent**; re-entry (e.g. the Renewal Status reset) finds the Task and does nothing | Static flag (also suppresses legitimate re-evaluation later in the same transaction) |
 | Daily scheduled batch | The trigger alone never fires for agreements nobody edits | Scheduled Flow (same rules would be duplicated in a second technology) |
+| Renewal completion driven by the Renewal Task (Task trigger) | The account manager already closes the Task when the work is done; the agreement follows automatically, with no extra click. Only the **current cycle's** Task counts | A "Complete Renewal" button in the component (duplicates what the user already does on the Task) |
 | Criteria in two forms (SOQL and in-memory) | The trigger already has the records (no query needed); the UI needs SOQL | A test (`getUpcomingRenewals_queryAndInMemoryCriteria_agree`) guarantees they never drift apart |
 | `DateProvider` with `@TestVisible` override | `Date.today()` cannot be mocked; boundary tests need fixed dates, and the batch tests simulate time passing | Building test data relative to the real date (cannot test Feb 29 or Dec 31 deterministically) |
 | Custom Metadata for 30/10 days | Changeable without code, deployable, no SOQL cost | Constants (code change needed); Custom Settings (data, not metadata) |
@@ -213,12 +229,13 @@ Field history is tracked on End Date, Status, Renewal Required, Account Manager 
 | Operation | Mode | Rationale |
 |---|---|---|
 | UI read (`ServiceAgreementSelector.selectRequiringAttention`) | `WITH USER_MODE` + `with sharing` | Users only see what their CRUD, FLS and sharing allow |
-| UI write: start renewal on the agreement | `update as user` (all-or-none) | The user must be allowed to edit every selected agreement |
+| UI write: start renewal on the agreement | Explicit edit-permission check, current state read `USER_MODE`, then `update as user` (all-or-none) | Read-only users see the list but cannot start renewals; records deleted or hidden meanwhile are reported; the user must be allowed to edit every selected agreement |
+| Renewal Task completed → agreement status | `SYSTEM_MODE` | Consequence of the assignee finishing their own Task; they may not have edit access to the agreement |
 | Renewal Task create/update, Task and User lookups | `SYSTEM_MODE`, `without sharing` service | System automation: duplicate prevention must see every Renewal Task, including other users' Tasks. Nothing from these queries is returned to a user |
 | Daily batch | `SYSTEM_MODE`, `without sharing` | Must process every qualifying agreement regardless of who scheduled it |
 | Application logs | Inserted in `SYSTEM_MODE`; readable only with `Application_Log_Viewer` | Users causing an error do not need access to logs |
 
-Missing access surfaces in the UI as *"You do not have access to Service Agreements"* (`QueryException` on read, `SecurityException` on write). Tests prove that users without the permission set can neither read nor change data.
+Missing access surfaces in the UI as a clear message: *"You do not have access to Service Agreements"* on read (`QueryException` from `USER_MODE`) and *"You do not have permission to start renewals"* on write (explicit permission check, which fails fast instead of relying on the platform's exception type). Tests prove that users without the permission set can neither read nor change data, and that read-only users can view the list but not start renewals.
 
 ---
 
@@ -227,21 +244,21 @@ Missing access surfaces in the UI as *"You do not have access to Service Agreeme
 - **Automation (trigger, batch):** partial-success DML (`allOrNone = false`). A record that cannot be processed is logged to `Application_Log__c` and does not block the save of the agreement or the processing of other records. Logs are buffered and written with a single DML statement.
 - **Unexpected exceptions** in the trigger are not swallowed. A blanket catch would leave data inconsistent, so the save is rolled back and the defect is visible.
 - **Batch:** chunks that fail entirely are reported to `Application_Log__c` in `finish()`.
-- **UI:** the controller validates input (empty selection, more than 200 records, non-agreement Ids) and maps exceptions to friendly messages: access errors, DML messages (e.g. a record deleted meanwhile), and a generic message for anything unexpected (internal details are not leaked).
+- **UI:** the controller validates input (empty selection, more than 200 records, non-agreement Ids) and maps exceptions to friendly messages: access errors, business messages (e.g. an agreement deleted meanwhile: *refresh the list*), DML messages (e.g. a validation rule added by an admin), and a generic message for anything unexpected (internal details are not leaked).
 - **Logging inside the controller is intentionally not done:** throwing `AuraHandledException` rolls back the transaction, including any log row.
 
 ---
 
 ## Testing strategy
 
-**75 Apex tests in 7 classes, 100% coverage.** The goal is behaviour, not coverage: every rule, boundary and failure path has a dedicated, named test.
+**86 Apex tests in 7 classes, 100% coverage.** The goal is behaviour, not coverage: every rule, boundary and failure path has a dedicated, named test.
 
 | Test class | Focus |
 |---|---|
 | `RenewalServiceTest` | Each criterion in isolation; window boundaries (day 0, 30, 31, yesterday); month, year and leap-year windows; configurable window; SOQL ↔ in-memory consistency; DTO fields; security (user with and without permission set) |
-| `RenewalTaskServiceTest` | Task creation and assignment; non-qualifying agreements; becoming qualifying on update; **duplicate prevention** (repeated edits, completed task, End Date change with open task, new cycle, unrelated manual tasks); **bulk** (200 insert, 200 update, mixed 100/100, constant query count); assignee fallback; due-date calendar boundaries; overdue task; configurable lead time; real DML failure logging |
+| `RenewalTaskServiceTest` | Task creation and assignment; non-qualifying agreements; becoming qualifying on update; **duplicate prevention** (repeated edits, completed task, End Date change with open task, new cycle, unrelated manual tasks); **bulk** (200 insert, 200 update, mixed 100/100, constant query count); assignee fallback; due-date calendar boundaries; overdue task; configurable lead time; real DML failure logging; **Task completion sync** (current cycle → Completed, reopen → In Progress, previous-cycle and non-renewal Tasks ignored, 200 Tasks completed in bulk, new cycle after Completed resets the status) |
 | `RenewalTaskBatchTest` | Agreements entering the window without edits (200, time simulated); only qualifying processed; idempotent re-run; scheduling; failed-chunk logging |
-| `UpcomingRenewalsControllerTest` | Read as renewal user / no-access user; start renewal (agreement + task, idempotent, completed task stays closed); validation; access denied changes nothing; deleted record; unexpected errors via **stub** |
+| `UpcomingRenewalsControllerTest` | Read as renewal user / no-access user; start renewal (agreement + task, idempotent, a completed renewal never regresses); validation; no-access and **read-only** users (permission set built inside the test) change nothing; deleted record; DML failure and unexpected errors via **stub** |
 | `ApplicationLoggerTest` | Buffering, single DML, exception capture, truncation, no-op flush |
 | `RenewalSettingsTest` / `DateProviderTest` | Metadata values, fallbacks for blank/invalid config, date override |
 
@@ -278,7 +295,7 @@ Two behaviours found and handled during development:
 - **Logging survives only committed transactions.** A Platform Event based logger (e.g. Nebula Logger) would also capture errors from rolled-back transactions, such as controller errors.
 - **Trigger bypass:** add a Custom Permission or Custom Metadata switch to bypass the automation for data migrations.
 - **Notifications:** besides the standard task assignment email, a Custom Notification or Slack alert for urgent renewals.
-- **Renewal outcome:** extend `Renewal_Status__c` (e.g. Renewed / Lost) and auto-create the next agreement on renewal.
+- **Renewal outcome:** distinguish how a renewal ended (e.g. Renewed / Lost instead of a single Completed) and auto-create the next agreement on renewal.
 - **Component:** filters (my agreements, urgent only), server-side pagination if volumes grow, and an Account record-page variant filtered by account.
 - **Jest tests** for the LWC (not required for this assessment).
 - **Configurable OWD:** move to Private sharing with sharing rules by team if required.
@@ -298,7 +315,7 @@ force-app/main/default/
 ├── objects/                 Service_Agreement__c, Application_Log__c, Renewal_Setting__mdt, Activity field
 ├── permissionsets/          Renewal_Management, Application_Log_Viewer
 ├── tabs/                    Service Agreements, Upcoming Renewals, Application Logs
-└── triggers/                ServiceAgreementTrigger
+└── triggers/                ServiceAgreementTrigger, TaskTrigger
 manifest/package.xml         Full component list (alternative deploy: --manifest)
 scripts/apex/                scheduleRenewalBatch.apex, seedDemoData.apex
 ```

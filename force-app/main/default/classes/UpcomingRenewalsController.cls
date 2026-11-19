@@ -54,9 +54,9 @@ public with sharing class UpcomingRenewalsController {
         validateSelection(agreementIds);
         try {
             service.startRenewal(new Set<Id>(agreementIds));
-        } catch (SecurityException e) {
-            // AS USER DML raises SecurityException when object/field access is missing.
-            throw buildException(NO_ACCESS_MESSAGE);
+        } catch (RenewalService.RenewalException e) {
+            // Business rule or permission message, written to be shown to users.
+            throw buildException(e.getMessage());
         } catch (DmlException e) {
             // Permission, sharing or validation problems: the platform message is meaningful to the user.
             throw buildException(e.getDmlMessage(0));

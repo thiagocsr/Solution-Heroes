@@ -38,7 +38,8 @@
             </template>
             <template lwc:elseif={hasRenewals}>
                 <p class="slds-p-horizontal_medium slds-p-bottom_small slds-text-color_weak" data-id="summary">
-                    {notStartedCount} not started. Agreements ending within {urgentDays} days are highlighted.
+                    {notStartedCount} not started, {completedCount} completed. Agreements ending within
+                    {urgentDays} days are highlighted.
                 </p>
                 <lightning-datatable
                     key-field="agreementId"

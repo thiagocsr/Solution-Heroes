@@ -14,6 +14,7 @@ Id currentUserId = UserInfo.getUserId();
 //     their Tasks are deleted with them) ---
 delete [SELECT Id FROM Service_Agreement__c WHERE Account__r.Name LIKE '[Demo] %'];
 delete [SELECT Id FROM Account WHERE Name LIKE '[Demo] %'];
+delete [SELECT Id FROM Application_Log__c];
 
 List<Account> accounts = new List<Account>{
     new Account(Name = PREFIX + 'Acme Corp'),
@@ -30,7 +31,7 @@ List<List<Object>> scenarios = new List<List<Object>>{
     // --- Qualifying (appear in the component, get a Renewal Task) ---
     new Object[]{ 'Acme Premium Support',     0, 0,  'Active', true, 48000, true,  'Not Started' }, // ends today
     new Object[]{ 'Globex Cloud Hosting',     1, 4,  'Active', true, 120000, true, 'Not Started' }, // urgent, task overdue
-    new Object[]{ 'Initech Field Service',    2, 9,  'Active', true, 15500, true,  'Not Started' }, // urgent
+    new Object[]{ 'Initech Field Service',    2, 9,  'Active', true, 15500, true,  'Completed' },   // urgent, renewal done
     new Object[]{ 'Umbrella Maintenance',     3, 15, 'Active', true, 32000, true,  'In Progress' }, // already started
     new Object[]{ 'Stark Managed Network',    4, 22, 'Active', true, 250000, false, 'Not Started' }, // no manager -> owner
     new Object[]{ 'Acme Analytics License',   0, 30, 'Active', true, 9900, true,   'Not Started' }, // last day of window
@@ -60,15 +61,27 @@ for (List<Object> s : scenarios) {
 }
 insert agreements;
 
-// Start renewals through the same service the component uses, so the agreement
-// and its Renewal Task are updated consistently.
+// Drive renewal progress through the real flows, so agreement and Renewal Task
+// stay consistent: start via the same service the component uses, complete by
+// closing the Task (TaskTrigger then marks the agreement Completed).
 Set<Id> startedIds = new Set<Id>();
+Set<Id> completedIds = new Set<Id>();
 for (Integer i = 0; i < scenarios.size(); i++) {
-    if (scenarios[i][7] == 'In Progress') {
+    String progress = (String) scenarios[i][7];
+    if (progress == 'In Progress' || progress == 'Completed') {
         startedIds.add(agreements[i].Id);
+    }
+    if (progress == 'Completed') {
+        completedIds.add(agreements[i].Id);
     }
 }
 new RenewalService().startRenewal(startedIds);
+
+List<Task> tasksToComplete = [SELECT Id FROM Task WHERE WhatId IN :completedIds AND Renewal_End_Date__c != NULL];
+for (Task renewalTask : tasksToComplete) {
+    renewalTask.Status = 'Completed';
+}
+update tasksToComplete;
 
 System.debug('Demo data created: ' + accounts.size() + ' accounts, ' + agreements.size() + ' agreements, ' +
     [SELECT COUNT() FROM Task WHERE WhatId IN :agreements AND Renewal_End_Date__c != NULL] + ' renewal tasks.');

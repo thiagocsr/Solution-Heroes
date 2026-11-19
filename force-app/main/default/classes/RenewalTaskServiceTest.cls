@@ -365,6 +365,163 @@ private class RenewalTaskServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Task completion -> agreement Renewal Status (TaskTrigger)
+    // ------------------------------------------------------------------
+
+    @IsTest
+    static void completeTask_currentCycle_marksAgreementCompleted() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Finish', REFERENCE_DATE.addDays(15));
+        agreement.Renewal_Status__c = RenewalService.RENEWAL_STATUS_IN_PROGRESS;
+        insert as system agreement;
+
+        Test.startTest();
+        completeTasks(agreement.Id);
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_COMPLETED, getRenewalStatus(agreement.Id));
+    }
+
+    @IsTest
+    static void completeTask_renewalNeverStarted_stillMarksAgreementCompleted() {
+        // The manager may finish the work without clicking Start Renewal first.
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Direct finish', REFERENCE_DATE.addDays(15));
+        insert as system agreement;
+
+        Test.startTest();
+        completeTasks(agreement.Id);
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_COMPLETED, getRenewalStatus(agreement.Id));
+    }
+
+    @IsTest
+    static void reopenTask_currentCycle_movesAgreementBackToInProgress() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Reopened', REFERENCE_DATE.addDays(15));
+        insert as system agreement;
+        completeTasks(agreement.Id);
+
+        Test.startTest();
+        Task renewalTask = getRenewalTasks(agreement.Id)[0];
+        renewalTask.Status = RenewalTaskService.TASK_STATUS_IN_PROGRESS;
+        update as system renewalTask;
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_IN_PROGRESS, getRenewalStatus(agreement.Id));
+    }
+
+    @IsTest
+    static void taskUpdateWithoutStatusChange_leavesAgreementUntouched() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Untouched', REFERENCE_DATE.addDays(15));
+        insert as system agreement;
+
+        Test.startTest();
+        Task renewalTask = getRenewalTasks(agreement.Id)[0];
+        renewalTask.Subject = 'Renamed by the manager';
+        update as system renewalTask;
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_NOT_STARTED, getRenewalStatus(agreement.Id));
+    }
+
+    @IsTest
+    static void completeTask_previousCycle_doesNotChangeCurrentCycle() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Two cycles', REFERENCE_DATE.addDays(5));
+        insert as system agreement;
+        completeTasks(agreement.Id); // cycle 1 done -> Completed
+        agreement.End_Date__c = REFERENCE_DATE.addDays(28);
+        update as system agreement; // cycle 2: new Task, status reset to Not Started
+        Task previousCycleTask = [
+            SELECT Id
+            FROM Task
+            WHERE WhatId = :agreement.Id AND Renewal_End_Date__c = :REFERENCE_DATE.addDays(5)
+            WITH SYSTEM_MODE
+        ];
+
+        Test.startTest();
+        previousCycleTask.Status = RenewalTaskService.TASK_STATUS_IN_PROGRESS; // reopen old cycle
+        update as system previousCycleTask;
+        previousCycleTask.Status = 'Completed'; // and close it again
+        update as system previousCycleTask;
+        Test.stopTest();
+
+        Assert.areEqual(
+            RenewalService.RENEWAL_STATUS_NOT_STARTED,
+            getRenewalStatus(agreement.Id),
+            'Tasks of a previous cycle must not drive the current renewal status'
+        );
+    }
+
+    @IsTest
+    static void completeTask_nonRenewalTask_leavesAgreementUntouched() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Manual task', REFERENCE_DATE.addDays(90));
+        insert as system agreement;
+        Task manualTask = new Task(WhatId = agreement.Id, Subject = 'Call customer', OwnerId = UserInfo.getUserId());
+        insert as system manualTask;
+
+        Test.startTest();
+        manualTask.Status = 'Completed';
+        update as system manualTask;
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_NOT_STARTED, getRenewalStatus(agreement.Id));
+    }
+
+    @IsTest
+    static void bulkCompleteTasks_200Agreements_allMarkedCompletedWithConstantQueries() {
+        pinContext(REFERENCE_DATE);
+        List<Service_Agreement__c> agreements = TestDataFactory.buildAgreements(
+            getAccountId(),
+            200,
+            REFERENCE_DATE.addDays(20)
+        );
+        insert as system agreements;
+        List<Task> tasks = [SELECT Id FROM Task WHERE Renewal_End_Date__c != NULL WITH SYSTEM_MODE];
+        for (Task renewalTask : tasks) {
+            renewalTask.Status = 'Completed';
+        }
+
+        Test.startTest();
+        update as system tasks;
+        Integer queriesUsed = Limits.getQueries();
+        Test.stopTest();
+
+        Assert.areEqual(
+            200,
+            [
+                SELECT COUNT()
+                FROM Service_Agreement__c
+                WHERE Renewal_Status__c = :RenewalService.RENEWAL_STATUS_COMPLETED
+                WITH SYSTEM_MODE
+            ]
+        );
+        // 1 query to read the agreements + 2 from the re-entrant agreement trigger (idempotent pass).
+        Assert.isTrue(queriesUsed <= 3, 'Query count must not grow with volume; used ' + queriesUsed);
+    }
+
+    @IsTest
+    static void update_newCycleAfterCompletedRenewal_resetsStatus() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = buildAgreement('Completed then renewed', REFERENCE_DATE.addDays(5));
+        insert as system agreement;
+        completeTasks(agreement.Id);
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_COMPLETED, getRenewalStatus(agreement.Id));
+
+        Test.startTest();
+        agreement.End_Date__c = REFERENCE_DATE.addDays(28);
+        update as system agreement;
+        Test.stopTest();
+
+        Assert.areEqual(RenewalService.RENEWAL_STATUS_NOT_STARTED, getRenewalStatus(agreement.Id));
+        Assert.areEqual(2, getRenewalTasks(agreement.Id).size(), 'New cycle gets its own Task');
+    }
+
+    // ------------------------------------------------------------------
     // Error handling
     // ------------------------------------------------------------------
 
@@ -420,6 +577,11 @@ private class RenewalTaskServiceTest {
             renewalTask.Status = 'Completed';
         }
         update as system tasks;
+    }
+
+    private static String getRenewalStatus(Id agreementId) {
+        return [SELECT Renewal_Status__c FROM Service_Agreement__c WHERE Id = :agreementId WITH SYSTEM_MODE]
+        .Renewal_Status__c;
     }
 
     private static void assertLogged(String severity, Id recordId) {

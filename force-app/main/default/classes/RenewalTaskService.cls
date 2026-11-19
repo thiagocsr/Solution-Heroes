@@ -14,8 +14,12 @@
  *   - Otherwise a new Task is created, due Task_Lead_Days__c (10) calendar
  *     days before the End Date, assigned to the Account Manager, or to the
  *     agreement Owner when the Account Manager is blank or inactive.
- *   - When a new cycle starts for an agreement whose renewal was In Progress
- *     in a previous cycle, its Renewal Status is reset to Not Started.
+ *   - When a new cycle starts for an agreement whose renewal was started
+ *     (In Progress or Completed) in a previous cycle, its Renewal Status is
+ *     reset to Not Started.
+ *   - Completing the current cycle's Renewal Task marks the agreement
+ *     Completed; reopening it moves the agreement back to In Progress
+ *     (see syncRenewalStatusFromTasks, called by TaskTrigger).
  *
  * Bulk behaviour: a fixed number of queries (2) and at most 4 DML statements
  * (create, re-align, status reset, log write) per invocation, regardless of
@@ -95,7 +99,7 @@ public without sharing class RenewalTaskService {
             }
 
             tasksToCreate.add(buildTask(agreement, assigneeId));
-            if (!existingTasks.isEmpty() && agreement.Renewal_Status__c == RenewalService.RENEWAL_STATUS_IN_PROGRESS) {
+            if (!existingTasks.isEmpty() && isRenewalStarted(agreement.Renewal_Status__c)) {
                 agreementsStartingNewCycle.add(agreement.Id);
             }
         }
@@ -105,6 +109,58 @@ public without sharing class RenewalTaskService {
         agreementsStartingNewCycle.retainAll(agreementsWithNewTask);
         resetRenewalStatus(agreementsStartingNewCycle);
 
+        ApplicationLogger.flush();
+    }
+
+    /**
+     * Keeps the agreement Renewal Status in step with its Renewal Task
+     * (called from TaskTrigger, after update):
+     *   - Renewal Task of the CURRENT cycle closed   -> agreement Completed
+     *   - Renewal Task of the CURRENT cycle reopened -> agreement In Progress
+     * Only Tasks whose open/closed state changed are considered. Tasks from
+     * older cycles (Renewal_End_Date__c != agreement End Date) and Tasks that
+     * are not Renewal Tasks are ignored. No query runs when no Renewal Task
+     * changed state, keeping the cost on ordinary Task updates at zero.
+     */
+    public static void syncRenewalStatusFromTasks(List<Task> tasks, Map<Id, Task> oldTasksById) {
+        Map<Id, Task> changedTaskByAgreement = new Map<Id, Task>();
+        for (Task renewalTask : tasks) {
+            Task oldTask = oldTasksById.get(renewalTask.Id);
+            if (isAgreementRenewalTask(renewalTask) && renewalTask.IsClosed != oldTask.IsClosed) {
+                changedTaskByAgreement.put(renewalTask.WhatId, renewalTask);
+            }
+        }
+        if (changedTaskByAgreement.isEmpty()) {
+            return;
+        }
+
+        List<Service_Agreement__c> agreementsToUpdate = new List<Service_Agreement__c>();
+        for (
+            Service_Agreement__c agreement : ServiceAgreementSelector.selectRenewalStateByIds(
+                changedTaskByAgreement.keySet(),
+                AccessLevel.SYSTEM_MODE
+            )
+        ) {
+            Task renewalTask = changedTaskByAgreement.get(agreement.Id);
+            if (renewalTask.Renewal_End_Date__c != agreement.End_Date__c) {
+                continue; // Task of a previous cycle: does not describe the current renewal.
+            }
+            String targetStatus = renewalTask.IsClosed
+                ? RenewalService.RENEWAL_STATUS_COMPLETED
+                : RenewalService.RENEWAL_STATUS_IN_PROGRESS;
+            if (agreement.Renewal_Status__c != targetStatus) {
+                agreementsToUpdate.add(new Service_Agreement__c(Id = agreement.Id, Renewal_Status__c = targetStatus));
+            }
+        }
+
+        if (!agreementsToUpdate.isEmpty()) {
+            List<Id> agreementIds = new List<Id>(new Map<Id, Service_Agreement__c>(agreementsToUpdate).keySet());
+            processSaveResults(
+                Database.update(agreementsToUpdate, false, AccessLevel.SYSTEM_MODE),
+                agreementIds,
+                'Renewal Status sync from Task'
+            );
+        }
         ApplicationLogger.flush();
     }
 
@@ -173,6 +229,17 @@ public without sharing class RenewalTaskService {
             }
         }
         return succeeded;
+    }
+
+    private static Boolean isRenewalStarted(String renewalStatus) {
+        return renewalStatus == RenewalService.RENEWAL_STATUS_IN_PROGRESS ||
+            renewalStatus == RenewalService.RENEWAL_STATUS_COMPLETED;
+    }
+
+    private static Boolean isAgreementRenewalTask(Task candidate) {
+        return candidate.Renewal_End_Date__c != null &&
+            candidate.WhatId != null &&
+            candidate.WhatId.getSObjectType() == Service_Agreement__c.SObjectType;
     }
 
     private static Map<Id, List<Task>> getRenewalTasksByAgreement(List<Service_Agreement__c> agreements) {

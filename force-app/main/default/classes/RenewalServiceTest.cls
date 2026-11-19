@@ -237,6 +237,24 @@ private class RenewalServiceTest {
         Assert.areEqual(UserInfo.getName(), renewal.accountManagerName);
         Assert.areEqual(RenewalService.RENEWAL_STATUS_IN_PROGRESS, renewal.renewalStatus);
         Assert.isTrue(renewal.renewalStarted);
+        Assert.isFalse(renewal.renewalCompleted);
+    }
+
+    @IsTest
+    static void getUpcomingRenewals_completedRenewal_isFlaggedAndStillListed() {
+        pinContext(REFERENCE_DATE);
+        Service_Agreement__c agreement = TestDataFactory.buildAgreement(getAccountId(), 'Done', REFERENCE_DATE.addDays(12));
+        agreement.Renewal_Status__c = RenewalService.RENEWAL_STATUS_COMPLETED;
+        insert as system agreement;
+
+        List<UpcomingRenewal> renewals;
+        System.runAs(getRenewalUser()) {
+            renewals = new RenewalService().getUpcomingRenewals();
+        }
+
+        Assert.areEqual(1, renewals.size(), 'Completed renewals stay visible until the agreement leaves the window');
+        Assert.isTrue(renewals[0].renewalCompleted);
+        Assert.isTrue(renewals[0].renewalStarted, 'Start Renewal must not apply to a completed renewal');
     }
 
     @IsTest

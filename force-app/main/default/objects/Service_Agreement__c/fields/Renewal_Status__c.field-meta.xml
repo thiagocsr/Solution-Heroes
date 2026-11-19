@@ -2,7 +2,7 @@
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Renewal_Status__c</fullName>
     <label>Renewal Status</label>
-    <description>Progress of the renewal work for the current cycle. Set to In Progress from the Upcoming Renewals component.</description>
+    <description>Progress of the renewal work for the current cycle. In Progress is set from the Upcoming Renewals component; Completed is set automatically when the current cycle's Renewal Task is completed; a new cycle resets it to Not Started.</description>
     <type>Picklist</type>
     <required>false</required>
     <trackHistory>true</trackHistory>
@@ -19,6 +19,11 @@
                 <fullName>In Progress</fullName>
                 <default>false</default>
                 <label>In Progress</label>
+            </value>
+            <value>
+                <fullName>Completed</fullName>
+                <default>false</default>
+                <label>Completed</label>
             </value>
         </valueSetDefinition>
     </valueSet>

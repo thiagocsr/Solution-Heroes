@@ -26,6 +26,13 @@ public with sharing class RenewalService {
     public static final String STATUS_ACTIVE = 'Active';
     public static final String RENEWAL_STATUS_NOT_STARTED = 'Not Started';
     public static final String RENEWAL_STATUS_IN_PROGRESS = 'In Progress';
+    public static final String RENEWAL_STATUS_COMPLETED = 'Completed';
+    public static final String AGREEMENTS_UNAVAILABLE_MESSAGE = 'Some of the selected agreements are no longer available. Refresh the list and try again.';
+    public static final String NO_EDIT_ACCESS_MESSAGE = 'You do not have permission to start renewals. Please contact your administrator.';
+
+    /** Business rule violation with a message that is safe to show to users. */
+    public class RenewalException extends Exception {
+    }
 
     /**
      * Agreements visible to the running user that require renewal attention,
@@ -48,22 +55,54 @@ public with sharing class RenewalService {
     /**
      * Marks renewal work as started for the given agreements.
      *
-     * The agreement update runs AS USER (all-or-none): the running user must
-     * have edit access to every selected agreement and to Renewal Status,
-     * otherwise nothing changes. Only after that succeeds are the related
-     * open Renewal Tasks moved to In Progress (a system-side consequence of
-     * an action the user was authorised to perform).
+     * 0. Checks that the user may edit Service Agreements and Renewal Status,
+     *    failing fast with a clear message (users with read-only access can
+     *    see the list but must not start renewals).
+     * 1. Reads the current state AS USER: an agreement that was deleted or
+     *    is not visible to the user fails the whole request with a clear
+     *    message (the list on screen is stale).
+     * 2. Agreements whose renewal is already Completed are left untouched, so
+     *    a completed renewal never regresses to In Progress.
+     * 3. The update runs AS USER (all-or-none): the user must be allowed to
+     *    edit every agreement and Renewal Status, otherwise nothing changes.
+     * 4. Only then are the related open Renewal Tasks moved to In Progress
+     *    (a system-side consequence of an action the user was authorised to
+     *    perform).
      *
      * Idempotent: agreements already In Progress are simply re-saved.
      */
     public void startRenewal(Set<Id> agreementIds) {
-        List<Service_Agreement__c> agreements = new List<Service_Agreement__c>();
-        for (Id agreementId : agreementIds) {
-            agreements.add(new Service_Agreement__c(Id = agreementId, Renewal_Status__c = RENEWAL_STATUS_IN_PROGRESS));
+        if (!canEditRenewalStatus()) {
+            throw new RenewalException(NO_EDIT_ACCESS_MESSAGE);
         }
-        update as user agreements;
+        List<Service_Agreement__c> currentAgreements = ServiceAgreementSelector.selectRenewalStateByIds(
+            agreementIds,
+            AccessLevel.USER_MODE
+        );
+        if (currentAgreements.size() != agreementIds.size()) {
+            throw new RenewalException(AGREEMENTS_UNAVAILABLE_MESSAGE);
+        }
 
-        RenewalTaskService.markRenewalTasksInProgress(agreementIds);
+        Map<Id, Service_Agreement__c> agreementsToStart = new Map<Id, Service_Agreement__c>();
+        for (Service_Agreement__c agreement : currentAgreements) {
+            if (agreement.Renewal_Status__c != RENEWAL_STATUS_COMPLETED) {
+                agreementsToStart.put(
+                    agreement.Id,
+                    new Service_Agreement__c(Id = agreement.Id, Renewal_Status__c = RENEWAL_STATUS_IN_PROGRESS)
+                );
+            }
+        }
+        if (agreementsToStart.isEmpty()) {
+            return;
+        }
+        update as user agreementsToStart.values();
+
+        RenewalTaskService.markRenewalTasksInProgress(agreementsToStart.keySet());
+    }
+
+    private static Boolean canEditRenewalStatus() {
+        return Schema.SObjectType.Service_Agreement__c.isUpdateable() &&
+            Schema.SObjectType.Service_Agreement__c.fields.Renewal_Status__c.isUpdateable();
     }
 
     /**

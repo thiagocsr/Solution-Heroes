@@ -26,8 +26,11 @@ public inherited sharing class UpcomingRenewal {
     public String accountManagerName;
     @AuraEnabled
     public String renewalStatus;
+    /** True once renewal work has started (In Progress or Completed): Start Renewal no longer applies. */
     @AuraEnabled
     public Boolean renewalStarted;
+    @AuraEnabled
+    public Boolean renewalCompleted;
 
     public UpcomingRenewal(Service_Agreement__c agreement, Date today) {
         this.agreementId = agreement.Id;
@@ -41,6 +44,8 @@ public inherited sharing class UpcomingRenewal {
         this.accountManagerId = agreement.Account_Manager__c;
         this.accountManagerName = agreement.Account_Manager__r?.Name;
         this.renewalStatus = agreement.Renewal_Status__c;
-        this.renewalStarted = agreement.Renewal_Status__c == RenewalService.RENEWAL_STATUS_IN_PROGRESS;
+        this.renewalCompleted = agreement.Renewal_Status__c == RenewalService.RENEWAL_STATUS_COMPLETED;
+        this.renewalStarted =
+            this.renewalCompleted || agreement.Renewal_Status__c == RenewalService.RENEWAL_STATUS_IN_PROGRESS;
     }
 }

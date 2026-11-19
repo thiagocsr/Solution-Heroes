@@ -53,6 +53,24 @@ public inherited sharing class ServiceAgreementSelector {
     }
 
     /**
+     * Current renewal state (End Date and Renewal Status) of the given
+     * agreements. The access level is chosen by the caller:
+     *   - USER_MODE when acting on behalf of the user (start renewal), so
+     *     records the user cannot see are not returned;
+     *   - SYSTEM_MODE for automation (Renewal Task completion).
+     */
+    public static List<Service_Agreement__c> selectRenewalStateByIds(
+        Set<Id> agreementIds,
+        System.AccessLevel accessLevel
+    ) {
+        return Database.queryWithBinds(
+            'SELECT Id, End_Date__c, Renewal_Status__c FROM Service_Agreement__c WHERE Id IN :agreementIds',
+            new Map<String, Object>{ 'agreementIds' => agreementIds },
+            accessLevel
+        );
+    }
+
+    /**
      * Query locator for the daily renewal batch: same criteria as
      * selectRequiringAttention, with the fields RenewalTaskService needs.
      *

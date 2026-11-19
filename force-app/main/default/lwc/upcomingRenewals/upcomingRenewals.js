@@ -9,12 +9,13 @@ import startRenewal from '@salesforce/apex/UpcomingRenewalsController.startRenew
 export const URGENT_DAYS = 10;
 export const ACTION_START_RENEWAL = 'start_renewal';
 
-const RENEWAL_STARTED_ICON = 'utility:success';
+const RENEWAL_IN_PROGRESS_ICON = 'utility:clock';
+const RENEWAL_COMPLETED_ICON = 'utility:success';
 const URGENT_ICON = 'utility:warning';
 
 /**
  * Row actions are resolved per row so "Start Renewal" is disabled once the
- * renewal is already in progress.
+ * renewal is In Progress or Completed.
  */
 function getRowActions(row, doneCallback) {
     doneCallback([
@@ -83,8 +84,15 @@ function toRow(renewal) {
         accountUrl: renewal.accountId ? `/${renewal.accountId}` : undefined,
         daysRemainingClass: isUrgent ? 'slds-text-color_error' : undefined,
         daysRemainingIcon: isUrgent ? URGENT_ICON : undefined,
-        renewalStatusIcon: renewal.renewalStarted ? RENEWAL_STARTED_ICON : undefined
+        renewalStatusIcon: getRenewalStatusIcon(renewal)
     };
+}
+
+function getRenewalStatusIcon(renewal) {
+    if (renewal.renewalCompleted) {
+        return RENEWAL_COMPLETED_ICON;
+    }
+    return renewal.renewalStarted ? RENEWAL_IN_PROGRESS_ICON : undefined;
 }
 
 /** Extracts a readable message from Apex / wire / JS errors. */
@@ -149,6 +157,10 @@ export default class UpcomingRenewals extends LightningElement {
         return this.renewals.filter((row) => !row.renewalStarted).length;
     }
 
+    get completedCount() {
+        return this.renewals.filter((row) => row.renewalCompleted).length;
+    }
+
     get selectedPendingRows() {
         const selected = new Set(this.selectedRowIds);
         return this.renewals.filter((row) => selected.has(row.agreementId) && !row.renewalStarted);
@@ -193,7 +205,11 @@ export default class UpcomingRenewals extends LightningElement {
     async startRenewals(rows) {
         const pendingRows = rows.filter((row) => !row.renewalStarted);
         if (pendingRows.length === 0) {
-            this.showToast('Nothing to start', 'Renewal work has already started for this agreement.', 'info');
+            this.showToast(
+                'Nothing to start',
+                'Renewal work has already started or been completed for the selected agreement.',
+                'info'
+            );
             return;
         }
 

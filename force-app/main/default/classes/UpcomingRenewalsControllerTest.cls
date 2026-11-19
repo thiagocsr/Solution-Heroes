@@ -101,19 +101,24 @@ private class UpcomingRenewalsControllerTest {
     }
 
     @IsTest
-    static void startRenewal_completedTask_isNotReopened() {
+    static void startRenewal_completedRenewal_staysCompleted() {
         pinContext();
         Service_Agreement__c agreement = TestDataFactory.buildAgreement(getAccountId(), 'Done', REFERENCE_DATE.addDays(5));
         insert as system agreement;
         Task renewalTask = [SELECT Id FROM Task WHERE WhatId = :agreement.Id WITH SYSTEM_MODE];
         renewalTask.Status = 'Completed';
-        update as system renewalTask;
+        update as system renewalTask; // TaskTrigger marks the agreement Completed
 
         System.runAs(getRenewalUser()) {
             UpcomingRenewalsController.startRenewal(new List<Id>{ agreement.Id });
         }
 
         Assert.areEqual('Completed', getTaskStatus(agreement.Id), 'Closed Tasks must stay closed');
+        Assert.areEqual(
+            RenewalService.RENEWAL_STATUS_COMPLETED,
+            [SELECT Renewal_Status__c FROM Service_Agreement__c WHERE Id = :agreement.Id WITH SYSTEM_MODE].Renewal_Status__c,
+            'A completed renewal must not regress to In Progress'
+        );
     }
 
     // ------------------------------------------------------------------
@@ -160,7 +165,7 @@ private class UpcomingRenewalsControllerTest {
         }
 
         Assert.isNotNull(caught, 'Users without edit access must not start renewals');
-        Assert.areEqual(UpcomingRenewalsController.NO_ACCESS_MESSAGE, caught.getMessage());
+        Assert.areEqual(RenewalService.NO_EDIT_ACCESS_MESSAGE, caught.getMessage());
         Assert.areEqual(
             RenewalService.RENEWAL_STATUS_NOT_STARTED,
             [SELECT Renewal_Status__c FROM Service_Agreement__c WHERE Id = :agreement.Id WITH SYSTEM_MODE].Renewal_Status__c
@@ -169,7 +174,34 @@ private class UpcomingRenewalsControllerTest {
     }
 
     @IsTest
-    static void startRenewal_agreementDeletedMeanwhile_returnsPlatformMessage() {
+    static void startRenewal_readOnlyUser_isRejectedAndNothingChanges() {
+        // The user can read agreements (the list loads) but not edit them:
+        // the AS USER update must fail with the access message.
+        pinContext();
+        Service_Agreement__c agreement = TestDataFactory.buildAgreement(getAccountId(), 'Read only', REFERENCE_DATE.addDays(5));
+        insert as system agreement;
+        User readOnlyUser = createReadOnlyAgreementUser();
+
+        AuraHandledException caught;
+        System.runAs(readOnlyUser) {
+            Assert.areEqual(1, UpcomingRenewalsController.getUpcomingRenewals().size(), 'Read access is granted');
+            try {
+                UpcomingRenewalsController.startRenewal(new List<Id>{ agreement.Id });
+            } catch (AuraHandledException e) {
+                caught = e;
+            }
+        }
+
+        Assert.isNotNull(caught, 'Read-only users must not start renewals');
+        Assert.areEqual(RenewalService.NO_EDIT_ACCESS_MESSAGE, caught.getMessage());
+        Assert.areEqual(
+            RenewalService.RENEWAL_STATUS_NOT_STARTED,
+            [SELECT Renewal_Status__c FROM Service_Agreement__c WHERE Id = :agreement.Id WITH SYSTEM_MODE].Renewal_Status__c
+        );
+    }
+
+    @IsTest
+    static void startRenewal_agreementDeletedMeanwhile_asksToRefresh() {
         // Simulates a stale list: another user deleted the agreement after it was displayed.
         pinContext();
         Service_Agreement__c agreement = TestDataFactory.buildAgreement(getAccountId(), 'Deleted', REFERENCE_DATE.addDays(5));
@@ -186,7 +218,32 @@ private class UpcomingRenewalsControllerTest {
         }
 
         Assert.isNotNull(caught);
-        Assert.areEqual('entity is deleted', caught.getMessage(), 'The DML error message must reach the user');
+        Assert.areEqual(RenewalService.AGREEMENTS_UNAVAILABLE_MESSAGE, caught.getMessage());
+    }
+
+    @IsTest
+    static void startRenewal_dmlFailure_returnsPlatformMessage() {
+        // E.g. a validation rule added by an admin rejects the update: the
+        // platform message is meaningful and must reach the user.
+        DmlException dmlFailure;
+        try {
+            insert as system new Service_Agreement__c(); // missing required fields
+        } catch (DmlException e) {
+            dmlFailure = e;
+        }
+        useFailingService(dmlFailure);
+
+        AuraHandledException caught;
+        System.runAs(getRenewalUser()) {
+            try {
+                UpcomingRenewalsController.startRenewal(new List<Id>{ fakeAgreementId() });
+            } catch (AuraHandledException e) {
+                caught = e;
+            }
+        }
+
+        Assert.isNotNull(caught);
+        Assert.areEqual(dmlFailure.getDmlMessage(0), caught.getMessage());
     }
 
     // ------------------------------------------------------------------
@@ -246,11 +303,17 @@ private class UpcomingRenewalsControllerTest {
     }
 
     /**
-     * Stub (not a mock): it only provides a canned behaviour, throwing an
-     * unexpected exception for any call. Tests assert on the controller's
+     * Stub (not a mock): it only provides a canned behaviour, throwing the
+     * given exception for any call. Tests assert on the controller's
      * outcome, not on the interactions with the service.
      */
     private class FailingRenewalServiceStub implements System.StubProvider {
+        private final Exception failure;
+
+        FailingRenewalServiceStub(Exception failure) {
+            this.failure = failure;
+        }
+
         public Object handleMethodCall(
             Object stubbedObject,
             String stubbedMethodName,
@@ -259,15 +322,55 @@ private class UpcomingRenewalsControllerTest {
             List<String> paramNames,
             List<Object> args
         ) {
-            throw new SimulatedException('internal detail from ' + stubbedMethodName);
+            throw failure;
         }
     }
 
     private static void useFailingService() {
+        useFailingService(new SimulatedException('internal detail'));
+    }
+
+    private static void useFailingService(Exception failure) {
         UpcomingRenewalsController.service = (RenewalService) Test.createStub(
             RenewalService.class,
-            new FailingRenewalServiceStub()
+            new FailingRenewalServiceStub(failure)
         );
+    }
+
+    /**
+     * Standard User with read-only access to Service Agreements, built with
+     * a permission set created on the fly (setup DML isolated via runAs).
+     */
+    private static User createReadOnlyAgreementUser() {
+        User user = TestDataFactory.createStandardUser('ReadOnlyUser', null);
+        System.runAs(new User(Id = UserInfo.getUserId())) {
+            PermissionSet readOnly = new PermissionSet(Name = 'Agreement_Read_Only_Test', Label = 'Agreement Read Only Test');
+            insert readOnly;
+            insert new ObjectPermissions(
+                ParentId = readOnly.Id,
+                SobjectType = 'Service_Agreement__c',
+                PermissionsRead = true
+            );
+            List<FieldPermissions> fieldAccess = new List<FieldPermissions>();
+            for (String field : new List<String>{ 'Agreement_Value__c', 'Renewal_Required__c', 'Account_Manager__c', 'Renewal_Status__c' }) {
+                fieldAccess.add(
+                    new FieldPermissions(
+                        ParentId = readOnly.Id,
+                        SobjectType = 'Service_Agreement__c',
+                        Field = 'Service_Agreement__c.' + field,
+                        PermissionsRead = true,
+                        PermissionsEdit = false
+                    )
+                );
+            }
+            insert fieldAccess;
+            insert new PermissionSetAssignment(AssigneeId = user.Id, PermissionSetId = readOnly.Id);
+        }
+        return user;
+    }
+
+    private static Id fakeAgreementId() {
+        return Id.valueOf(Service_Agreement__c.SObjectType.getDescribe().getKeyPrefix() + '000000000001');
     }
 
     private static void assertRejected(List<Id> agreementIds, String expectedMessage) {
